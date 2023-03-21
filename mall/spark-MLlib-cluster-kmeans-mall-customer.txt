@@ -1,0 +1,444 @@
+
+val df = spark.read.format("csv").option("header","true").load("mall_customer/Mall_Customers.csv")
+
+df.printSchema
+root
+ |-- CustomerID: string (nullable = true)
+ |-- Gender: string (nullable = true)
+ |-- Age: string (nullable = true)
+ |-- Annual Income (k$): string (nullable = true)
+ |-- Spending Score (1-100): string (nullable = true)
+ 
+df.show(10)
++----------+------+---+------------------+----------------------+
+|CustomerID|Gender|Age|Annual Income (k$)|Spending Score (1-100)|
++----------+------+---+------------------+----------------------+
+|         1|  Male| 19|                15|                    39|
+|         2|  Male| 21|                15|                    81|
+|         3|Female| 20|                16|                     6|
+|         4|Female| 23|                16|                    77|
+|         5|Female| 31|                17|                    40|
+|         6|Female| 22|                17|                    76|
+|         7|Female| 35|                18|                     6|
+|         8|Female| 23|                18|                    94|
+|         9|  Male| 64|                19|                     3|
+|        10|Female| 30|                19|                    72|
++----------+------+---+------------------+----------------------+
+
+val rdd = sc.textFile("mall_customer/Mall_Customers.csv")
+
+val rdd1 = rdd.filter( x => ! x.contains("CustomerID")).map( x => x.split(","))
+
+rdd1.take(10)
+res3: Array[Array[Any]] = Array(Array(1, Male, 19, 15, 39), Array(2, Male, 21, 15, 81), Array(3, Female, 20, 16, 6), Array(4, Female, 23, 16, 77), Array(5, Female, 31, 17, 40), Array(6, Female, 22, 17, 76), Array(7, Female, 35, 18, 6), Array(8, Female, 23, 18, 94), Array(9, Male, 64, 19, 3), Array(10, Female, 30, 19, 72))
+
+val categories = rdd1.map( x => x(1)).distinct.zipWithIndex.collectAsMap
+categories: scala.collection.immutable.Map[Any,Long] = Map(Male -> 0, Female -> 1)
+
+import org.apache.spark.mllib.linalg.Vectors
+
+val vect = rdd1.map( x => Vectors.dense(categories(x(1)),x(2).toString.toDouble,x(3).toString.toDouble,x(4).toString.toDouble) )
+
+vect.take(10)
+res5: Array[org.apache.spark.mllib.linalg.Vector] = Array([0.0,19.0,15.0,39.0], [0.0,21.0,15.0,81.0], [1.0,20.0,16.0,6.0], [1.0,23.0,16.0,77.0], [1.0,31.0,17.0,40.0], [1.0,22.0,17.0,76.0], [1.0,35.0,18.0,6.0], [1.0,23.0,18.0,94.0], [0.0,64.0,19.0,3.0], [1.0,30.0,19.0,72.0])
+
+import org.apache.spark.mllib.clustering.KMeans
+val numClusters = 5
+val numIterations = 10
+val numRuns = 3
+
+val clsmodel = KMeans.train(vect, numClusters,numIterations, numRuns)
+
+val predictions = clsmodel.predict(vect);
+
+predictions.take(10)
+res6: Array[Int] = Array(4, 0, 4, 0, 4, 0, 4, 0, 4, 0)
+
+// function to compute distance between 2 featured points
+import breeze.linalg._
+import breeze.numerics.pow
+def computeDistance(v1: DenseVector[Double], v2: DenseVector[Double]) = pow(v1 - v2, 2).sum
+
+val rdd2 = rdd1.zip(vect)
+
+val cls_dist = rdd2.map{ case (x,y) => {
+   val pred = clsmodel.predict(y)
+   val cls_centre = clsmodel.clusterCenters(pred)
+   val dist = computeDistance(DenseVector(cls_centre.toArray),DenseVector(y.toArray))
+   (x(1),x(2),x(3),x(4),pred,dist)
+ }}
+
+val cls_assign = cls_dist.groupBy{case(x,y,z,t,cluster,dist) => cluster}.collectAsMap
+
+for ((k,v) <- cls_assign.toSeq.sortBy(_._1)) {
+    println(s"Cluster $k:")
+    val m = v.toSeq.sortBy(_._5)
+    println(m.take(20).map { case (x,y,z,t,_,d) => (x,y,z,t,d) }.mkString("\n"))
+       println("=====\n")
+  }
+
+  
+Cluster 0:
+(Male,21,15,81,1014.2215999999999)
+(Female,23,16,77,828.5016)
+(Female,22,17,76,757.5816)
+(Female,23,18,94,1471.8615999999997)
+(Female,30,19,72,600.5416)
+(Female,35,19,99,1854.7415999999998)
+(Female,24,20,77,638.2216)
+(Male,22,20,79,702.8216)
+(Male,20,21,66,447.3016)
+(Female,35,23,98,1621.4615999999999)
+(Male,25,24,73,391.74159999999995)
+(Male,31,25,73,396.22159999999997)
+(Male,29,28,82,534.0615999999999)
+(Male,35,28,61,292.8616)
+(Female,23,29,87,701.5415999999999)
+(Female,21,30,73,232.42159999999996)
+(Male,18,33,92,919.0615999999999)
+(Female,21,33,81,385.4615999999999)
+(Female,30,34,73,169.34159999999997)
+(Female,20,37,75,170.78159999999997)
+=====
+
+Cluster 1:
+(Female,65,38,35,608.1039201183432)
+(Female,50,40,55,278.95007396449705)
+(Female,49,42,52,202.29622781065095)
+(Male,59,43,60,301.6808431952661)
+(Female,50,43,45,171.95007396449714)
+(Male,47,43,41,248.48853550295877)
+(Female,51,44,50,130.52699704142017)
+(Male,69,44,46,366.2193047337277)
+(Male,53,46,46,89.75776627218941)
+(Male,70,46,56,403.603920118343)
+(Female,67,47,52,254.7577662721892)
+(Female,54,47,59,170.7962278106508)
+(Male,63,48,51,143.1808431952662)
+(Female,43,48,50,164.06545857988175)
+(Female,68,48,48,257.1423816568046)
+(Male,70,49,55,344.79622781065063)
+(Female,47,49,42,125.4500739644972)
+(Female,60,50,49,66.41161242603545)
+(Female,60,50,56,119.45007396449691)
+(Male,59,54,47,33.334689349112395)
+=====
+
+Cluster 2:
+(Female,23,70,29,721.1592403214028)
+(Male,59,71,11,670.7268078889699)
+(Male,47,71,9,399.2673484295106)
+(Female,25,72,34,723.2403214024838)
+(Male,20,73,5,795.5646457268082)
+(Female,44,73,7,347.2673484295106)
+(Male,19,74,10,702.4565376187002)
+(Female,57,75,5,606.861943024105)
+(Female,28,76,40,758.5646457268081)
+(Male,25,77,12,382.2132943754568)
+(Male,48,77,36,485.2132943754565)
+(Female,34,78,22,143.7538349159972)
+(Male,43,78,17,97.78086194302412)
+(Female,44,78,20,106.02410518626736)
+(Female,47,78,16,138.5916727538349)
+(Male,37,78,1,395.72680788897014)
+(Male,34,78,1,424.67275383491614)
+(Female,56,79,35,599.6997808619428)
+(Male,19,81,5,670.2943754565379)
+(Male,50,85,26,160.780861943024)
+=====
+
+Cluster 3:
+(Male,39,69,91,426.3833004602234)
+(Female,31,70,77,302.8961209730438)
+(Male,40,71,95,460.8191978961209)
+(Male,38,71,75,320.71663379355664)
+(Male,39,71,75,332.3320184089412)
+(Female,31,72,71,338.2807363576592)
+(Female,29,73,88,231.6140696909927)
+(Male,32,73,73,267.3833004602233)
+(Female,35,74,72,265.3320184089413)
+(Male,32,75,93,252.10124917817222)
+(Female,32,76,87,135.48586456278758)
+(Male,28,77,97,334.46022353714665)
+(Female,32,77,74,157.74227481919775)
+(Male,34,78,90,136.870479947403)
+(Male,39,78,88,147.46022353714656)
+(Female,38,78,76,138.84483892176183)
+(Female,27,78,89,152.74227481919786)
+(Female,30,78,78,97.40894148586445)
+(Female,30,78,73,163.6909927679157)
+(Female,29,79,83,71.43458251150551)
+=====
+
+Cluster 4:
+(Male,19,15,39,1108.1219008264463)
+(Female,20,16,6,890.7582644628101)
+(Female,31,17,40,643.6673553719008)
+(Female,35,18,6,351.12190082644634)
+(Male,64,19,3,731.9400826446281)
+(Male,67,19,14,600.0309917355371)
+(Female,58,20,15,248.4855371900826)
+(Male,37,20,13,140.12190082644634)
+(Female,35,21,35,326.66735537190084)
+(Male,52,23,29,143.21280991735534)
+(Male,35,24,35,307.2128099173554)
+(Female,46,25,5,236.84917355371903)
+(Female,54,28,14,138.21280991735534)
+(Female,45,28,32,143.12190082644625)
+(Female,40,29,31,144.30371900826447)
+(Male,60,30,4,528.9400826446281)
+(Male,53,33,4,392.7582644628099)
+(Female,49,33,14,113.66735537190081)
+(Female,42,34,17,83.9400826446281)
+(Female,36,37,26,228.21280991735537)
+=====
+
+
+
+def distance(a: org.apache.spark.mllib.linalg.Vector, b: org.apache.spark.mllib.linalg.Vector) =
+     |  math.sqrt(a.toArray.zip(b.toArray).
+     |  map(p => p._1 - p._2).map(d => d * d).sum)
+
+ def distToCentroid(datum: org.apache.spark.mllib.linalg.Vector, model: org.apache.spark.mllib.clustering.KMeansModel) = {
+     |  val cluster = model.predict(datum)
+     |  val centroid = model.clusterCenters(cluster)
+     |  distance(centroid, datum)
+     | }
+	 
+import org.apache.spark.rdd._
+
+ def clusteringScore(data: RDD[org.apache.spark.mllib.linalg.Vector], k: Int) = {
+     | val kmeans = new KMeans()
+     |  kmeans.setK(k)
+     |  val model = kmeans.run(data)
+     | data.map(datum => distToCentroid(datum, model)).mean()
+     | }
+
+vect.cache
+
+(2 to 50 by 3).map(k => (k, clusteringScore(vect, k))).foreach(println)
+(2,30.85263701422325)
+(5,18.374012803628396)
+(8,15.927855782891664)
+(11,12.320150033245577)
+(14,11.455983083354898)
+(17,10.578291060801037)
+(20,9.564148277153851)
+(23,9.093725821108961)
+(26,8.204185711903358)
+(29,8.070111219763472)
+(32,7.483806290327495)
+(35,6.956019321507475)
+(38,6.6829024172066385)
+(41,6.485605470598242)
+(44,6.191743946521541)
+(47,6.023661275342252)
+(50,5.633965063809036)
+
+import org.apache.spark.mllib.feature.StandardScaler
+
+val scaler = new StandardScaler(true, true).fit(vect)
+
+val vectScaled = vect.map(x => scaler.transform(x))
+
+vectScaled.cache
+
+
+(2 to 50 by 3).map(k => (k, clusteringScore(vectScaled, k))).foreach(println)
+(2,1.6564491530728123)
+(5,1.2259185073791723)
+(8,0.9110613841436148)
+(11,0.8401938666348998)
+(14,0.6977459121614)
+(17,0.6364301129531417)
+(20,0.5818364147384145)
+(23,0.5597615505614756)
+(26,0.48270469520838305)
+(29,0.46030744158431075)
+(32,0.4495191194562329)
+(35,0.43112214529158865)
+(38,0.3996558254226721)
+(41,0.37751883372022765)
+(44,0.3689797088301403)
+(47,0.35222069403029277)
+(50,0.33525553268697034)
+
+(2 to 50 by 2).map(k => (k, clusteringScore(vectScaled, k))).foreach(println)
+(2,1.614442534344229)
+(4,1.3819211401723752)
+(6,1.0802364325835507)
+(8,0.9837498348584693)
+(10,0.8719014864707187)
+(12,0.783985276939096)
+(14,0.6918898670672581)
+(16,0.6469580544272372)
+(18,0.622112623706154)
+(20,0.5618229006857617)
+(22,0.5321450635799091)
+(24,0.5198494606733706)
+(26,0.5213619600841917)
+(28,0.4947668400445569)
+(30,0.4818132683770776)
+(32,0.44570678416558207)
+(34,0.41999703869735977)
+(36,0.4183279335228155)
+(38,0.4033368534160862)
+(40,0.41609769264228263)
+(42,0.3732740582791341)
+(44,0.3722854315830578)
+(46,0.3578860380985233)
+(48,0.33858101698412374)
+(50,0.3418341970850736)
+
+
+import org.apache.spark.mllib.clustering.KMeans
+val numClusters = 5
+val numIterations = 10
+val numRuns = 3
+
+val clsmodel = KMeans.train(vect, numClusters,numIterations, numRuns)
+
+val predictions = clsmodel.predict(vectScaled);
+
+predictions.take(10)
+res24: Array[Int] = Array(2, 2, 2, 2, 2, 2, 1, 2, 1, 2)
+
+// function to compute distance between 2 featured points
+import breeze.linalg._
+import breeze.numerics.pow
+def computeDistance(v1: DenseVector[Double], v2: DenseVector[Double]) = pow(v1 - v2, 2).sum
+
+val rdd2 = rdd1.zip(vectScaled)
+
+val cls_dist = rdd2.map{ case (x,y) => {
+   val pred = clsmodel.predict(y)
+   val cls_centre = clsmodel.clusterCenters(pred)
+   val dist = computeDistance(DenseVector(cls_centre.toArray),DenseVector(y.toArray))
+   (x(1),x(2),x(3),x(4),pred,dist)
+ }}
+
+val cls_assign = cls_dist.groupBy{case(x,y,z,t,cluster,dist) => cluster}.collectAsMap
+
+for ((k,v) <- cls_assign.toSeq.sortBy(_._1)) {
+    println(s"Cluster $k:")
+    val m = v.toSeq.sortBy(_._5)
+    println(m.take(20).map { case (x,y,z,t,_,d) => (x,y,z,t,d) }.mkString("\n"))
+       println("=====\n")
+  }
+
+ Cluster 0:
+(Male,52,23,29,3.8077987526589827)
+(Male,35,24,35,2.754056397887832)
+(Male,25,24,73,3.1284619157370672)
+(Male,31,25,73,2.2366843317302374)
+(Male,29,28,82,2.651875500797279)
+(Male,35,28,61,1.4125452721977347)
+(Male,24,38,92,3.486038241926341)
+(Male,48,39,36,1.6358140866104887)
+(Male,33,42,60,0.6572719717569921)
+(Male,59,43,60,1.957150363275299)
+(Male,47,43,41,1.0507405750827234)
+(Male,69,44,46,4.59681698062958)
+(Male,53,46,46,1.2405983089269559)
+(Male,70,46,56,4.531829927482958)
+(Male,19,46,55,2.6981680202956846)
+(Male,63,48,51,2.7469975962276805)
+(Male,18,48,59,2.826786847958414)
+(Male,19,48,59,2.5965547101512403)
+(Male,70,49,55,4.463291999017099)
+(Male,59,54,47,1.9577484441982795)
+=====
+
+Cluster 1:
+(Female,35,18,6,4.586403051572533)
+(Female,58,20,15,2.9397308169444796)
+(Female,46,25,5,2.9305931896873005)
+(Female,54,28,14,1.9880500525747864)
+(Female,45,28,32,1.3176734070079257)
+(Female,40,29,31,1.6164868631239222)
+(Female,49,33,14,1.516213047050868)
+(Female,42,34,17,1.5668160625856125)
+(Female,36,37,26,1.656067968843432)
+(Female,65,38,35,1.7056421188639912)
+(Female,49,39,28,0.5401826504029811)
+(Female,50,40,55,0.9573623422454576)
+(Female,49,42,52,0.7087049021078413)
+(Female,50,43,45,0.3976468404156249)
+(Female,51,44,50,0.5448978742384389)
+(Female,67,47,52,2.0695757296519783)
+(Female,54,47,59,1.0424065443532338)
+(Female,43,48,50,0.6412765904130642)
+(Female,68,48,48,2.0545473920951314)
+(Female,47,49,42,0.17942747308038096)
+=====
+
+Cluster 2:
+(Female,40,69,58,1.3930011358448158)
+(Female,31,70,77,0.7899448212582848)
+(Female,31,72,71,0.6489434215176212)
+(Female,29,73,88,0.9949793889549451)
+(Female,35,74,72,0.5397435721603298)
+(Female,28,76,40,2.159369435536737)
+(Female,32,76,87,0.7271809975396942)
+(Female,32,77,74,0.3834010647870625)
+(Female,38,78,76,0.4826023813363738)
+(Female,27,78,89,0.9096423974377003)
+(Female,30,78,78,0.42047128721814786)
+(Female,30,78,73,0.3800794279650539)
+(Female,29,79,83,0.5330362583293463)
+(Female,31,81,93,0.8612032939172524)
+(Female,36,85,75,0.18596796988669484)
+(Female,33,86,95,0.8515461606507646)
+(Female,30,88,86,0.3913455021569148)
+(Female,37,97,32,2.6910103080470065)
+(Female,32,97,86,0.37481753391144373)
+(Female,29,98,88,0.5519098067431315)
+=====
+
+Cluster 3:
+(Male,19,15,39,4.763663295663181)
+(Male,21,15,81,4.709898592423089)
+(Female,20,16,6,5.2552293407291675)
+(Female,23,16,77,1.2912616274116588)
+(Female,31,17,40,1.4970982063213318)
+(Female,22,17,76,1.2033089103978745)
+(Female,23,18,94,2.4862423605928354)
+(Female,30,19,72,0.9778827462857349)
+(Female,35,19,99,3.451980993170713)
+(Female,24,20,77,1.0331469933150577)
+(Male,22,20,79,4.241336032290867)
+(Female,35,21,35,1.919873395394866)
+(Male,20,21,66,3.7703025327862005)
+(Female,35,23,98,3.12907021486793)
+(Female,23,29,87,1.3498975997108813)
+(Female,21,30,73,0.5308140682924105)
+(Male,18,33,92,5.000856936784091)
+(Female,21,33,81,0.8853240272876218)
+(Female,30,34,73,0.4825542335246121)
+(Female,20,37,75,0.5579839211491638)
+=====
+
+Cluster 4:
+(Male,64,19,3,6.658244722955385)
+(Male,67,19,14,7.214459226123547)
+(Male,37,20,13,4.240708275264727)
+(Male,60,30,4,4.29948796185192)
+(Male,53,33,4,2.958831620643485)
+(Male,43,71,35,0.7474177311402855)
+(Male,59,71,11,1.3485082377950184)
+(Male,47,71,9,0.11545540007862959)
+(Male,20,73,5,2.763685855733706)
+(Male,19,74,10,2.9255948937515344)
+(Male,25,77,12,1.6555437445292012)
+(Male,48,77,36,0.9700269716838155)
+(Male,43,78,17,0.0639126936889318)
+(Male,37,78,1,0.4189918816507733)
+(Male,34,78,1,0.6446839100297954)
+(Male,19,81,5,3.0966105948199227)
+(Male,50,85,26,0.73573287606815)
+(Male,42,86,20,0.32871611203501916)
+(Male,40,87,13,0.32717177087223037)
+(Male,36,87,10,0.5369371759556236)
+=====
+
+

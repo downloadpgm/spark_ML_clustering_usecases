@@ -1,0 +1,139 @@
+// wget https://caelum-online-public.s3.amazonaws.com/2278-spark-sistema-recomendacao/01/dados_musicas.csv
+
+val rdd = sc.textFile("/root/staging/dados_musicas.csv")
+rdd.take(10)
+rdd.count
+
+val df = spark.read.option("inferSchema","true").option("header","true").option("sep",";").csv("/root/staging/dados_musicas.csv")
+df.count
+df.printSchema
+df.show
+
+import org.apache.spark.ml.feature.VectorAssembler
+
+df.columns.diff(Array("artists","year","key","duration_ms","id","name","artists_song"))
+
+val va = new VectorAssembler().setInputCols(df.columns.diff(Array("artists","year","key","duration_ms","id","name","artists_song"))).setOutputCol("features")
+val df_va = va.transform(df)
+df_va.show
+df_va.printSchema
+df_va.select("id","features").show(false)
+
+import org.apache.spark.ml.feature.StandardScaler
+val scale = new StandardScaler().setInputCol("features").setOutputCol("features_std")
+val df_sc = scale.fit(df_va).transform(df_va)
+df_sc.show
+df_sc.select("id","features_std").show(false)
+
+import org.apache.spark.ml.clustering.KMeans
+import org.apache.spark.ml.evaluation.ClusteringEvaluator
+
+val bceval = new ClusteringEvaluator().setPredictionCol("prediction").setFeaturesCol("features_std")
+bceval.getMetricName
+
+val kmeans = new KMeans().setFeaturesCol("features_std")
+
+import org.apache.spark.ml.tuning.{ParamGridBuilder, CrossValidator}
+
+val paramGrid = new ParamGridBuilder().addGrid(kmeans.k, Array(3,5,10)).build()
+val cv = new CrossValidator().setEstimator(kmeans).setEvaluator(bceval).setEstimatorParamMaps(paramGrid).setNumFolds(3).setSeed(42)
+
+df_sc.cache
+df_sc.count
+
+val model = cv.fit(df_sc)
+
+val pred = model.transform(df_sc)
+pred.show
+pred.printSchema
+pred.select("prediction").distinct().show
+pred.select("prediction","artists_song").show(false)
+
+
+import org.apache.spark.ml.clustering.KMeansModel
+val kmeans_model = model.bestModel.asInstanceOf[KMeansModel]
+
+kmeans_model.clusterCenters(0)
+res61: org.apache.spark.ml.linalg.Vector = [0.9845183465670948,2.6016028155640503,2.549291830162989,1.2619673060494845,0.09684914291491602,1.4977098268867024,0.9912001066570225,-3.3188619067926424,1.5844192762978229,4.640665066341205,0.4384824736041806,3.574267006542526]
+
+import math._
+import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.ml.linalg.Vectors
+ 
+val euclideanDistance = udf { (v1: Vector, v2: Vector) =>
+    sqrt(Vectors.sqdist(v1, v2))
+}
+
+import org.apache.spark.sql.functions.udf
+val clu_center = udf( (x:Int) => kmeans_model.clusterCenters(x))
+
+spark.udf.register("clu_center",clu_center)
+
+pred.withColumn("clu_center", clu_center(col("prediction")))
+
+val pred_clu = pred.withColumn("clu_center", clu_center(col("prediction")))
+
+pred_clu.printSchema
+
+pred_clu.withColumn("distance",euclideanDistance($"clu_center", $"features_std"))
+
+val pred_dist = pred_clu.withColumn("distance",euclideanDistance($"clu_center", $"features_std"))
+
+pred_dist.printSchema
+
+pred_dist.show
+
+
+scala> pred_dist.where("prediction = 0").orderBy("distance").select("distance","artists_song").show(false)
++------------------+------------------------------------------------------------------+
+|distance          |artists_song                                                      |
++------------------+------------------------------------------------------------------+
+|0.6300063736451513|Taylor Swift - Last Christmas                                     |
+|0.7413479973740832|Randy Rogers Band - Buy Myself A Chance                           |
+|0.746409204893636 |Brooks & Dunn - She's Not the Cheatin' Kind                       |
+|0.7667351931217534|Sugarland - All I Want To Do                                      |
+|0.7671553033917339|Alan Jackson - Livin' On Love                                     |
+|0.7755517571597357|Thomas Rhett - Star Of The Show                                   |
+|0.7844177350741521|Dierks Bentley - Black                                            |
+|0.8289667982311885|Pearl Jam - Last Kiss                                             |
+|0.841282798368715 |Arcade Fire - Modern Man                                          |
+|0.8505573508193104|Gary Allan - Nothing On But The Radio                             |
+|0.8521468986103502|La Arrolladora Banda El Lim?n De Rene Camacho - Ya No Te Buscar?  |
+|0.8721634298883347|Jay Chou - ???                                                    |
+|0.8725809638384127|Reik - Ya Me Enter? (feat. Nicky Jam) - Urban Version             |
+|0.8776547891098135|Tame Impala - Half Full Glass Of Wine                             |
+|0.8952087843365993|RBD - Empezar Desde Cero                                          |
+|0.9077296042456995|Johnny Cash - It Ain't Me, Babe (with June Carter Cash)           |
+|0.9094798481342167|Jagged Edge - Let's Get Married                                   |
+|0.9128432477479742|Glee Cast - Forget You (Glee Cast Version) (feat. Gwyneth Paltrow)|
+|0.9129033502051501|Prince Royce - Las Cosas Peque?as                                 |
+|0.9180360590356597|MARINA - Are You Satisfied?                                       |
++------------------+------------------------------------------------------------------+
+only showing top 20 rows
+
+scala> pred_dist.where("prediction = 1").orderBy("distance").select("distance","artists_song").show(false)
++------------------+--------------------------------------------------------+
+|distance          |artists_song                                            |
++------------------+--------------------------------------------------------+
+|0.8344470841012067|Paramore - Misguided Ghosts                             |
+|0.8861449404341608|Ben Rector - Forever Like That                          |
+|0.971540426099416 |Ingrid Michaelson - Keep Breathing                      |
+|0.9878491309968452|The Avett Brothers - I Wish I Was                       |
+|0.9995175874881819|Alan Jackson - Remember When                            |
+|1.0202549091420496|Beck - Morning                                          |
+|1.0286977639849013|Johnny Cash - I Hung My Head                            |
+|1.03179724889504  |Luther Vandross - Endless Love (with Mariah Carey)      |
+|1.0389337427239254|Coldplay - Us Against the World                         |
+|1.0608416363971884|James Bay - Move Together                               |
+|1.0614048590307688|Jack Johnson - All At Once                              |
+|1.0623080051497324|Rascal Flatts - Bless the Broken Road - Acoustic        |
+|1.0670668961168603|Brad Paisley - I'm Gonna Miss Her                       |
+|1.0737172110588968|Sam Smith - Say It First                                |
+|1.0794647113479328|Glee Cast - Baby, It's Cold Outside (feat. Darren Criss)|
+|1.0868990968279306|Zara Larsson - She's Not Me, Pt. 1 & 2                  |
+|1.0930851176070173|Brand New - Play Crack The Sky                          |
+|1.096608787373914 |Breaking Benjamin - Rain                                |
+|1.0985806061595538|Taylor Swift - Sad Beautiful Tragic                     |
+|1.1011721453314989|Pearl Jam - The End                                     |
++------------------+--------------------------------------------------------+
+only showing top 20 rows

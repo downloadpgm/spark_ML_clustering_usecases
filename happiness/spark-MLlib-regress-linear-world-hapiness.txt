@@ -1,21 +1,22 @@
 
-val rdd = sc.textFile("world_happiness/world_happiness_report_2015.csv").map( x => x.split(","))
+val rdd1 = sc.textFile("world_happiness/world_happiness_report_2015.csv").map( x => x.split(","))
 
-val rdd1 = rdd.map( x => x.slice(3,x.size).map( x => x.toDouble))
+val rdd = rdd1.map( x => x.slice(3,x.size).map( x => x.toDouble))
 
-rdd1.first
+rdd.first
+res0: Array[Double] = Array(7.587, 0.03411, 1.39651, 1.34951, 0.94143, 0.66557, 0.41978, 0.29678, 2.51738)
 
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.regression.LabeledPoint
 
-val data = rdd1.map( x => {
+val data = rdd.map( x => {
    val arr_size = x.size
    val l = x(0)
    val f = x.slice(1,arr_size)
    LabeledPoint(l,Vectors.dense(f))
  })
  
-val sets = data.randomSplit(Array(0.8,0.2))
+val sets = data.randomSplit(Array(0.7,0.3), 11L)
 val trainSet = sets(0)
 val testSet = sets(1)
 
@@ -23,24 +24,81 @@ trainSet.cache
 
 ---- MLlib logistic regression --------------
 
+import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.regression.LinearRegressionWithSGD
-val model = LinearRegressionWithSGD.train(trainSet, 200, 1.0)
-
-val alg = new LinearRegressionWithSGD()
-alg.setIntercept(true)
-alg.optimizer.setNumIterations(200)
-alg.optimizer.setStepSize(1.0)
-val model = alg.run(trainSet)
-
-val validPredicts = testSet.map(x => (model.predict(x.features),x.label))
-
-validPredicts.take(10)
-res6: Array[(Double, Double)] = Array((7.128668661003051,7.527), (7.109346649004852,7.278), (6.7883147632169045,6.946), (6.603731566439976,6.798), (6.552075365039732,6.574), (6.067416094800416,5.987), (5.877603749019901,5.824), (5.970908343780179,5.759), (5.780423776848055,5.689), (5.722046825576282,5.605))
-
 import org.apache.spark.mllib.evaluation.RegressionMetrics
-val validMetrics = new RegressionMetrics(validPredicts)
-validMetrics.rootMeanSquaredError  // 0.2146084670916074
-validMetrics.meanSquaredError  // 0.04605679414740955
+
+def iterateLRwSGD(iterNums:Array[Int], stepSizes:Array[Double], train:RDD[LabeledPoint], test:RDD[LabeledPoint]) = {
+  println("iter, step  -> RMSE, MSE") 
+  for(numIter <- iterNums; step <- stepSizes) {
+    val model = new LinearRegressionWithSGD
+	model.setIntercept(true)
+	model.optimizer.setNumIterations(numIter).setStepSize(step)
+	val lr = model.run(train)
+    val validPredicts = test.map(x => (lr.predict(x.features),x.label))
+    val metrics = new RegressionMetrics(validPredicts)
+    println("%d, %7.5f -> %.4f, %.4f".format(numIter, step, metrics.rootMeanSquaredError, metrics.meanSquaredError))
+  }
+}
+
+iterateLRwSGD(Array(100,200,300),Array(1, 0.1, 0.01, 0.001), trainSet, testSet)
+iter, step  -> RMSE, MSE
+100, 1.00000 -> 0.2240, 0.0502
+100, 0.10000 -> 0.4691, 0.2200
+100, 0.01000 -> 0.9852, 0.9706
+100, 0.00100 -> 3.7611, 14.1458
+200, 1.00000 -> 0.2055, 0.0422  *
+200, 0.10000 -> 0.4691, 0.2200
+200, 0.01000 -> 0.8028, 0.6445
+200, 0.00100 -> 3.7519, 14.0766
+300, 1.00000 -> 0.2055, 0.0422
+300, 0.10000 -> 0.4691, 0.2200
+300, 0.01000 -> 0.8028, 0.6445
+300, 0.00100 -> 3.7519, 14.0766
+
+----- Decide to scale features because variabiliaty increases even reducing step size of model 
+
+import org.apache.spark.mllib.feature.StandardScaler
+val scaler = new StandardScaler(true, true).fit(trainSet.map(x => x.features))
+ 
+val trainScaled = trainSet.map(x => LabeledPoint(x.label,scaler.transform(x.features)))
+val testScaled = testSet.map(x => LabeledPoint(x.label, scaler.transform(x.features)))
+
+trainScaled.cache
+
+---- MLlib Linear regression --------------
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.mllib.regression.LinearRegressionWithSGD
+import org.apache.spark.mllib.evaluation.RegressionMetrics
+
+def iterateLRwSGD(iterNums:Array[Int], stepSizes:Array[Double], train:RDD[LabeledPoint], test:RDD[LabeledPoint]) = {
+  println("iter, step  -> RMSE, MSE") 
+  for(numIter <- iterNums; step <- stepSizes) {
+    val model = new LinearRegressionWithSGD
+	model.setIntercept(true)
+	model.optimizer.setNumIterations(numIter).setStepSize(step)
+	val lr = model.run(train)
+    val validPredicts = test.map(x => (lr.predict(x.features),x.label))
+    val metrics = new RegressionMetrics(validPredicts)
+    println("%d, %7.5f -> %.4f, %.4f".format(numIter, step, metrics.rootMeanSquaredError, metrics.meanSquaredError))
+  }
+}
+
+iterateLRwSGD(Array(100,200,300),Array(1, 0.1, 0.01, 0.001), trainScaled, testScaled)
+iter, step  -> RMSE, MSE
+100, 1.00000 -> 0.0357, 0.0013  *
+100, 0.10000 -> 0.6960, 0.4845
+100, 0.01000 -> 3.6676, 13.4516
+100, 0.00100 -> 4.3511, 18.9323
+200, 1.00000 -> 0.0357, 0.0013
+200, 0.10000 -> 0.5564, 0.3096
+200, 0.01000 -> 3.3887, 11.4831
+200, 0.00100 -> 4.3511, 18.9323
+300, 1.00000 -> 0.0357, 0.0013
+300, 0.10000 -> 0.5564, 0.3096
+300, 0.01000 -> 3.2942, 10.8517
+300, 0.00100 -> 4.3511, 18.9323
 
 ---- MLlib decision tree regression --------------
 
@@ -57,54 +115,9 @@ val model = DecisionTree.trainRegressor(trainSet, categoricalFeaturesInfo, impur
 val validPredicts = testSet.map(x => (model.predict(x.features),x.label))
 
 validPredicts.take(10)
-res9: Array[(Double, Double)] = Array((7.407888888888891,7.527), (6.27,7.278), (7.0322000000000005,6.946), (5.180923076923078,6.798), (6.8965,6.574), (5.474,5.987), (6.0306000000000015,5.824), (5.391500000000001,5.759), (5.180923076923078,5.689), (5.8188666666666675,5.605))
+res8: Array[(Double, Double)] = Array((7.587,7.527), (7.416499999999999,7.522), (6.611000000000001,7.284), (6.635249999999999,7.278), (6.914666666666668,7.226), (7.371,7.2), (7.371,6.853), (6.914666666666668,6.81), (5.985500000000002,6.798), (6.914666666666668,6.455))
 
 import org.apache.spark.mllib.evaluation.RegressionMetrics
 val validMetrics = new RegressionMetrics(validPredicts)
-validMetrics.rootMeanSquaredError  // 0.6863887053994453
-validMetrics.meanSquaredError  // 0.4711294548999265
-
--------------------------
-
-val vect = rdd1.map( x => Vectors.dense(x(1),x(2),x(3),x(4),x(5),x(6),x(7),x(8),x(0)))
-
-import org.apache.spark.mllib.linalg.Matrix
-import org.apache.spark.mllib.linalg.distributed.RowMatrix
-val matrix = new RowMatrix(vect)
-val colstats = matrix.computeColumnSummaryStatistics
-
-colstats.min
-res16: org.apache.spark.mllib.linalg.Vector = [0.01848,0.0,0.0,0.0,0.0,0.0,0.0,0.32858,2.839]
-
-colstats.max
-res17: org.apache.spark.mllib.linalg.Vector = [0.13693,1.69042,1.40223,1.02525,0.66973,0.55191,0.79588,3.60214,7.587]
-
-colstats.mean
-res19: org.apache.spark.mllib.linalg.Vector = [0.04788474683544302,0.8461372151898745,0.9910459493670879,0.6302593670886076,0.4286149367088608,0.14342183544303796,0.23729550632911395,2.098976772151899,5.3757341772151905]
-
-val colsims = matrix.columnSimilarities()
-val mat1 = colsims.toRowMatrix
-
-import org.apache.spark.mllib.linalg.distributed.MatrixEntry
-val transformedRDD = colsims.entries.map{case MatrixEntry(row: Long, col:Long, sim:Double) => ((row,col),sim)}
-
-val rep = transformedRDD.sortBy(_._1).map(x => ((x._1._1,x._1._2),x._2))
-
-var i = -1.0
-
-rep.foreach( x => {
-  val sim = x._2
-  if (x._1._1 != i) { println
-    print(f"$sim%.4f ")
-    i = x._1._1
-  } else print(f"$sim%.4f ")
-})
-
-0.8193 0.8976 0.8392 0.8744 0.6848 0.8174 0.9180 0.9089
-0.9443 0.9688 0.9050 0.7782 0.7953 0.8780 0.9532
-0.9494 0.9488 0.7754 0.8623 0.9427 0.9841
-0.9224 0.7731 0.8407 0.9026 0.9658
-0.8292 0.8912 0.9180 0.9622
-0.7610 0.7372 0.8037
-0.8417 0.8811
-0.9741
+validMetrics.rootMeanSquaredError  // 0.5620248213460143
+validMetrics.meanSquaredError  // 0.3158718998090193
