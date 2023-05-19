@@ -1,0 +1,128 @@
+
+val df = spark.read.option("inferSchema","true").option("header","true").option("sep",";").csv("hdfs://hdpmst:9000/data/dados_musicas.csv")
+
+import org.apache.spark.ml.feature.VectorAssembler
+val va = new VectorAssembler().setInputCols(df.columns.diff(Array("year","artists","id","name","artists_song"))).setOutputCol("features")
+
+import org.apache.spark.ml.feature.StandardScaler
+val scaler = new StandardScaler().setInputCol("features").setOutputCol("features_std")
+
+val K = 6  // consider 6 first PCs
+import org.apache.spark.ml.feature.PCA
+val pca = new PCA().setInputCol("features_std").setOutputCol("features_pca").setK(K)
+
+import org.apache.spark.ml.{Pipeline,PipelineModel}
+val pipeline = new Pipeline().setStages(Array(va,scaler,pca))
+
+import org.apache.spark.ml.clustering.KMeans
+val kmeans = new KMeans().setFeaturesCol("features_pca").setK(10)
+
+val pipeline = new Pipeline().setStages(Array(va,scaler,pca,kmeans))
+
+val model = pipeline.fit(df)
+val df_clu = model.transform(df)
+df_clu.groupBy('prediction).count.show
++----------+-----+                                                              
+|prediction|count|
++----------+-----+
+|         0| 2387|
+|         3| 2433|
+|         4| 1185|
+|         1| 1776|
+|         8|  738|
+|         2| 2371|
+|         5| 2118|
+|         7| 2168|
+|         6| 2328|
+|         9| 2807|
++----------+-----+
+
+model.write.save("hdfs://hdpmst:9000/model/musicas")
+
+----------------------
+
+import org.apache.spark.ml.PipelineModel
+val model = PipelineModel.load("hdfs://hdpmst:9000/model/musicas")
+
+val df = spark.read.option("inferSchema","true").option("header","true").option("sep",";").csv("hdfs://hdpmst:9000/data/dados_musicas.csv")
+
+val df_sample = df.sample(false,0.01)
+
+df_sample.count  // 216
+
+val df_clu = model.transform(df_sample)
+
+df_clu.select('prediction, 'artists_song).show(false)
++----------+---------------------------------------------------+                
+|prediction|artists_song                                       |
++----------+---------------------------------------------------+
+|0         |Sade - By Your Side                                |
+|6         |Nickelback - How You Remind Me                     |
+|0         |Shakira - Whenever, Wherever                       |
+|5         |Aventura - Ense?ame a Olvidar                      |
+|9         |50 Cent - P.I.M.P.                                 |
+|4         |Brand New - The Quiet Things That No One Ever Knows|
+|6         |The Killers - Mr. Brightside                       |
+|6         |Sia - Breathe Me                                   |
+|6         |Kenny Chesney - There Goes My Life                 |
+|6         |The Fray - Over My Head (Cable Car)                |
+|6         |Kenny Chesney - Beer In Mexico                     |
+|6         |Linkin Park - What I've Done                       |
+|0         |Kanye West - Heartless                             |
+|9         |T.I. - Whatever You Like                           |
+|9         |Kid Cudi - Pursuit Of Happiness (Nightmare)        |
+|0         |Young the Giant - Cough Syrup                      |
+|0         |Panic! At The Disco - The Ballad of Mona Lisa      |
+|9         |J. Cole - In The Morning                           |
+|6         |One Direction - They Don't Know About Us           |
+|4         |Justin Timberlake - Mirrors                        |
++----------+---------------------------------------------------+
+only showing top 20 rows
+
+import org.apache.spark.ml.clustering.KMeansModel
+val kmeans_model = model.stages.last.asInstanceOf[KMeansModel]
+
+
+import math._
+import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.ml.linalg.Vectors
+import org.apache.spark.sql.functions.udf
+ 
+val euclideanDistance = udf { (v1: Vector, v2: Vector) =>
+    sqrt(Vectors.sqdist(v1, v2))
+}
+
+spark.udf.register("euclideanDistance",euclideanDistance)
+
+val clu_center = udf( (x:Int) => kmeans_model.clusterCenters(x))
+
+spark.udf.register("clu_center",clu_center)
+
+df_clu.createOrReplaceTempView("pred_cluster")
+
+spark.sql("select prediction,euclideanDistance(clu_center(prediction),features_pca) as dist,artists_song from pred_cluster").show(false)
++----------+------------------+---------------------------------------------------+
+|prediction|dist              |artists_song                                       |
++----------+------------------+---------------------------------------------------+
+|0         |1.7615655268223773|Sade - By Your Side                                |
+|6         |2.218582662367317 |Nickelback - How You Remind Me                     |
+|0         |2.0012189202896704|Shakira - Whenever, Wherever                       |
+|5         |1.421079227894212 |Aventura - Ense?ame a Olvidar                      |
+|9         |2.9417668096804612|50 Cent - P.I.M.P.                                 |
+|4         |1.5034639276075406|Brand New - The Quiet Things That No One Ever Knows|
+|6         |2.117739207562754 |The Killers - Mr. Brightside                       |
+|6         |2.0240044427017096|Sia - Breathe Me                                   |
+|6         |1.446655983551547 |Kenny Chesney - There Goes My Life                 |
+|6         |1.6656021525512006|The Fray - Over My Head (Cable Car)                |
+|6         |1.2769112973683052|Kenny Chesney - Beer In Mexico                     |
+|6         |1.1798968475878722|Linkin Park - What I've Done                       |
+|0         |1.4053950356706824|Kanye West - Heartless                             |
+|9         |2.0962423970804163|T.I. - Whatever You Like                           |
+|9         |2.4768802739919344|Kid Cudi - Pursuit Of Happiness (Nightmare)        |
+|0         |2.107465672217915 |Young the Giant - Cough Syrup                      |
+|0         |2.466514108515465 |Panic! At The Disco - The Ballad of Mona Lisa      |
+|9         |2.19682989856066  |J. Cole - In The Morning                           |
+|6         |1.6496334739709893|One Direction - They Don't Know About Us           |
+|4         |3.5869199837289623|Justin Timberlake - Mirrors                        |
++----------+------------------+---------------------------------------------------+
+only showing top 20 rows
