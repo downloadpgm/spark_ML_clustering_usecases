@@ -1,0 +1,110 @@
+scala> dfgen.printSchemaroot
+ |-- mode: integer (nullable = true)
+ |-- genres: string (nullable = true)
+ |-- acousticness: double (nullable = true)
+ |-- danceability: double (nullable = true)
+ |-- duration_ms: double (nullable = true)
+ |-- energy: double (nullable = true)
+ |-- instrumentalness: double (nullable = true)
+ |-- liveness: double (nullable = true)
+ |-- loudness: double (nullable = true)
+ |-- speechiness: double (nullable = true)
+ |-- tempo: double (nullable = true)
+ |-- valence: double (nullable = true)
+ |-- popularity: double (nullable = true)
+ |-- key: integer (nullable = true)
+
+
+scala> df.printSchema
+root
+ |-- valence: double (nullable = true)
+ |-- year: integer (nullable = true)
+ |-- acousticness: double (nullable = true)
+ |-- artists: string (nullable = true)
+ |-- danceability: double (nullable = true)
+ |-- duration_ms: integer (nullable = true)
+ |-- energy: double (nullable = true)
+ |-- explicit: integer (nullable = true)
+ |-- id: string (nullable = true)
+ |-- instrumentalness: double (nullable = true)
+ |-- key: integer (nullable = true)
+ |-- liveness: double (nullable = true)
+ |-- loudness: double (nullable = true)
+ |-- mode: integer (nullable = true)
+ |-- name: string (nullable = true)
+ |-- popularity: integer (nullable = true)
+ |-- speechiness: double (nullable = true)
+ |-- tempo: double (nullable = true)
+ |-- artists_song: string (nullable = true)
+ 
+ 
+val df = spark.read.option("inferSchema","true").option("header","true").option("sep",";").csv("staging/dados_musicas.csv")
+df.printSchema
+
+val dfgen = spark.read.option("inferSchema","true").option("header","true").csv("staging/dados_musicas_genero.csv")
+dfgen.printSchema
+
+val dfgen1 = dfgen.drop("mode","duration_ms","key")
+dfgena.printSchema
+val df1 = df.drop("mode","duration_ms","key","id","explicit","artists","name")
+df1.show
+
+import org.apache.spark.ml.feature.VectorAssembler
+import org.apache.spark.ml.feature.StandardScaler
+
+df1.columns
+val va = new VectorAssembler().setInputCols(Array("valence","acousticness","danceability","energy","instrumentalness","liveness","loudness","speechiness","tempo")).setOutputCol("features")
+
+val df_va = va.transform(df1)
+val dfgen_va = va.transform(dfgen1)
+
+import org.apache.spark.ml.feature.StandardScaler
+val scaler = new StandardScaler().setWithMean(true).setWithStd(true).setInputCol("features").setOutputCol("features_std")
+
+val df_sc = scaler.fit(df_va).transform(df_va)
+val dfgen_sc = scaler.fit(dfgen_va).transform(dfgen_va)
+
+import math._
+import org.apache.spark.ml.linalg.Vector
+import org.apache.spark.ml.linalg.Vectors
+import org.apache.spark.sql.functions.udf
+ 
+val euclideanDistance = udf { (v1: Vector, v2: Vector) =>
+    sqrt(Vectors.sqdist(v1, v2))
+}
+
+spark.udf.register("euclideanDistance",euclideanDistance)
+
+val firstdf = df_sc.limit(1)
+firstdf.show
+
+firstdf.crossJoin(dfgen_sc)
+
+firstdf.crossJoin(dfgen_sc).count
+dfgen_sc.count
+
+firstdf.crossJoin(dfgen_sc).withColumn("distance",euclideanDistance(firstdf.col("features_std"),dfgen_sc.col("features_std")))
+
+val topgen_df = firstdf.crossJoin(dfgen_sc).withColumn("distance",euclideanDistance(firstdf.col("features_std"),dfgen_sc.col("features_std"))).select("year","artists_song","genres","distance")
+
+topgen_df.printSchema
+topgen_df.show
+topgen_df.orderBy(desc("distance")).show
+
+---- 
+
+val firstdf = df_sc.where('artists_song like "Madonna%Groove%").limit(1)
+firstdf.show
+
+firstdf.crossJoin(dfgen_sc)
+
+firstdf.crossJoin(dfgen_sc).count
+dfgen_sc.count
+
+firstdf.crossJoin(dfgen_sc).withColumn("distance",euclideanDistance(firstdf.col("features_std"),dfgen_sc.col("features_std")))
+
+val topgen_df = firstdf.crossJoin(dfgen_sc).withColumn("distance",euclideanDistance(firstdf.col("features_std"),dfgen_sc.col("features_std"))).select("year","artists_song","genres","distance")
+
+topgen_df.printSchema
+topgen_df.show
+topgen_df.orderBy(desc("distance")).show
